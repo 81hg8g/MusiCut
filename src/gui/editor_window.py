@@ -58,7 +58,7 @@ class EditorWindow(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"剪辑工作台 - {analysis.src_path.name}")
-        self.resize(1200, 720)
+        self.resize(1100, 560)
 
         self._analysis = analysis
         self._min_track = min_track_sec
@@ -143,8 +143,9 @@ class EditorWindow(QDialog):
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.addWidget(QLabel("分割点"))
+        right_layout.addWidget(QLabel("分割点（时间 / 段时长）"))
         self.marker_list = QListWidget()
+        self.marker_list.currentRowChanged.connect(self._on_marker_selected)
         right_layout.addWidget(self.marker_list, 1)
         btn_row = QHBoxLayout()
         self.btn_del_marker = QPushButton("删除选中")
@@ -262,13 +263,28 @@ class EditorWindow(QDialog):
 
     def _refresh_marker_list(self) -> None:
         markers = self.wave.markers()
+        duration = self._analysis.total_duration
+        # 刷新时阻断选中信号，避免触发跳转播放
+        self.marker_list.blockSignals(True)
         self.marker_list.clear()
         for i, m in enumerate(markers):
-            item = QListWidgetItem(f"#{i + 1:02d}   {self._fmt(m)}")
+            nxt = markers[i + 1] if i + 1 < len(markers) else duration
+            seg_dur = max(0.0, nxt - m)
+            item = QListWidgetItem(f"#{i + 1:02d}   {self._fmt(m)}   时长 {self._fmt(seg_dur)}")
             self.marker_list.addItem(item)
+        self.marker_list.blockSignals(False)
         # 预览曲目数
         n = len(markers) + 1
         self.lbl_segments.setText(f"将切出 {n} 首")
+
+    def _on_marker_selected(self, row: int) -> None:
+        """选中分割点记录 → 跳转到该位置并开始播放"""
+        markers = self.wave.markers()
+        if 0 <= row < len(markers):
+            sec = markers[row]
+            self._player.seek_ms(int(sec * 1000))
+            self.wave.set_playhead(sec)
+            self._player.play()
 
     # ---------- 确认 ----------
 
