@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QAction, QColor, QContextMenuEvent
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -33,6 +33,7 @@ from src.core.analyzer import (
 )
 from src.core.ffmpeg_ops import detect_silences
 from src.core.splitter import SplitResult, SplitTask, execute_task, plan_output_paths
+from src.gui.editor_window import EditorWindow
 
 
 _COL_FLAG = 0
@@ -213,6 +214,7 @@ class MainWindow(QMainWindow):
         self.tree.header().setSectionResizeMode(_COL_TITLE, QHeaderView.ResizeMode.Stretch)
         self.tree.header().setSectionResizeMode(_COL_STATUS, QHeaderView.ResizeMode.ResizeToContents)
         self.tree.currentItemChanged.connect(self._on_selection_changed)
+        self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         splitter.addWidget(self.tree)
 
         self.preview = QTreeWidget()
@@ -363,6 +365,56 @@ class MainWindow(QMainWindow):
         m = int(sec // 60)
         s = int(sec % 60)
         return f"{m}:{s:02d}"
+
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
+        """双击打开剪辑工作台"""
+        path_str = item.data(0, Qt.ItemDataRole.UserRole)
+        if not path_str:
+            return
+        path = Path(path_str)
+        analysis = self._analyses.get(path)
+        if analysis is None or analysis.error:
+            QMessageBox.warning(self, "提示", "该文件分析失败，无法打开编辑器")
+            return
+        editor = EditorWindow(
+            analysis,
+            min_track_sec=self.spin_min.value(),
+            long_track_sec=self.spin_long.value(),
+            parent=self,
+        )
+        if editor.exec() == EditorWindow.DialogCode.Accepted and editor.result_segments is not None:
+            # 更新分析结果
+            new_analysis = FileAnalysis(
+                src_path=analysis.src_path,
+                total_duration=analysis.total_duration,
+                segments=editor.result_segments,
+            )
+            self._analyses[path] = new_analysis
+            self._update_tree_item(item, new_analysis)
+            self._on_selection_changed(item)
+            self.lbl_status.setText(f"已更新: {path.name}")
+
+    def _update_tree_item(self, item: QTreeWidgetItem, analysis: FileAnalysis) -> None:
+        """根据分析结果刷新树中条目显示"""
+        total_m = int(analysis.total_duration // 60)
+        total_s = int(analysis.total_duration % 60)
+        item.setText(_COL_DURATION, f"{total_m}:{total_s:02d}")
+        if analysis.error:
+            item.setText(_COL_STATUS, f"错误: {analysis.error}")
+            item.setForeground(_COL_STATUS, QColor("red"))
+        else:
+            cnt = len(analysis.segments)
+            flags = [s.flag for s in analysis.segments if s.flag != TrackFlag.OK]
+            if TrackFlag.TOO_LONG in flags:
+                status = f"{cnt} 首 (⚠️ 有长曲目)"
+                item.setForeground(_COL_STATUS, QColor("red"))
+            elif TrackFlag.TOO_SHORT in flags:
+                status = f"{cnt} 首 (⚠️ 有短曲目)"
+                item.setForeground(_COL_STATUS, QColor("orange"))
+            else:
+                status = f"{cnt} 首"
+                item.setForeground(_COL_STATUS, QColor("black"))
+            item.setText(_COL_STATUS, status)
 
     def _on_split(self) -> None:
         analyses = [a for a in self._analyses.values() if a.error is None]
