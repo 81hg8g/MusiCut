@@ -1,0 +1,43 @@
+# Compiled Python files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.coverage
+
+# Build artifacts
+dist/
+build/
+
+# Configuration files
+config.json
+local_config.json
+
+# Logs
+*.log
+logs/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Virtual environment
+venv/
+.env/
+.envrc
+
+# PyInstaller artifacts
+*.toc
+*.pkg
+
+# Output
+output/
