@@ -32,7 +32,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['assets\\MusiCut.png'],
+    icon=['assets\\MusiCut.ico'],
     version='assets\\version_info.txt',
 )
 coll = COLLECT(
