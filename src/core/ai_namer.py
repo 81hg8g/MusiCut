@@ -14,26 +14,22 @@ _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 _MAX_LYRICS_CHARS = 1200
 
 _SYSTEM_ZH = (
-    "你是一位资深音乐编辑与作词人。任务：为一段音频起一个凝练、有画面感的中文歌名。\n"
+    "你是一位资深音乐编辑与作词人。任务：为一段音频起一个凝练、有画面感的歌名。\n"
     "规则：\n"
-    "1) 若提供了歌词，优先依据歌词的主题、意象与情绪命名；\n"
+    "1) 若提供了歌词/演唱文本，优先依据其主题、意象与情绪命名；\n"
     "2) 若没有歌词，则依据音频的曲风与氛围描述来命名；\n"
-    "3) 歌名 2~10 个汉字，不含标点、引号，不含“歌名”“Untitled”等字样；\n"
-    "4) 不要与“歌单”“Playlist”“合集”等词相关；\n"
-    "5) 只输出 JSON 对象，格式为 {\"title\": \"...\", \"reason\": \"...\"}，"
+    "3) 语言要求以用户说明为准，务必严格遵守；\n"
+    "4) 歌名需简洁（中文 2~10 字；英文 2~5 个单词），不含标点、引号，"
+    "不含“歌名”“Untitled”“Song”等字样；\n"
+    "5) 不得与用户列出的已用歌名重复或高度近似；\n"
+    "6) 只输出 JSON 对象，格式为 {\"title\": \"...\", \"reason\": \"...\"}，"
     "reason 用一句话说明命名依据。"
 )
 
-_SYSTEM_EN = (
-    "You are a senior music editor and lyricist. Name the audio with a concise, "
-    "evocative English title.\n"
-    "Rules:\n"
-    "1) If lyrics are provided, base the title on their theme, imagery and mood;\n"
-    "2) If not, base it on the musical style and atmosphere description;\n"
-    "3) Title 2~5 words, no punctuation or quotes, no 'Untitled' or 'Song';\n"
-    "4) Avoid words like 'playlist' or 'collection';\n"
-    "5) Output ONLY a JSON object: {\"title\": \"...\", \"reason\": \"...\"}."
-)
+_LANG_RULE_ZH = "这首歌包含中文演唱。歌名以中文为主，也可以使用英文。"
+_LANG_RULE_EN = "这首歌为纯英文演唱。歌名必须全部使用英文，不得出现任何中文汉字。"
+_LANG_RULE_ZH_ONLY = "未检测到演唱信息。请使用中文命名。"
+_LANG_RULE_EN_ONLY = "未检测到演唱信息。请使用英文命名。"
 
 
 class AiNamerError(RuntimeError):
@@ -55,16 +51,21 @@ class NamingInput:
     lyrics_source: str = "none"
     features_desc: str = ""
     meta_hint: str = ""
+    detected_language: str = "unknown"   # zh / en / unknown
 
 
-def suggest_title(settings: Settings, data: NamingInput) -> NamingResult:
-    """调用大模型为单曲起名。"""
+def suggest_title(
+    settings: Settings,
+    data: NamingInput,
+    avoid: Sequence[str] = (),
+) -> NamingResult:
+    """调用大模型为单曲起名。avoid 为需避让的已用歌名。"""
     if not settings.is_configured:
         raise AiNamerError("未配置 API Key，请先在设置中填写")
 
     payload = {
         "model": settings.model,
-        "messages": _build_messages(settings, data),
+        "messages": _build_messages(settings, data, avoid),
         "temperature": 1.0,
         "response_format": {"type": "json_object"},
         "stream": False,
@@ -92,26 +93,46 @@ def suggest_title(settings: Settings, data: NamingInput) -> NamingResult:
     return _parse_response(resp)
 
 
-def _build_messages(settings: Settings, data: NamingInput) -> list[dict]:
-    system = _SYSTEM_ZH if settings.language == "zh" else _SYSTEM_EN
-    lines = [f"原文件名：{data.file_name}", f"时长：{_fmt_dur(data.duration_sec)}"]
+def _build_messages(
+    settings: Settings,
+    data: NamingInput,
+    avoid: Sequence[str] = (),
+) -> list[dict]:
+    lines = [
+        f"【语言要求】{_language_rule(settings, data.detected_language)}",
+        f"原文件名：{data.file_name}",
+        f"时长：{_fmt_dur(data.duration_sec)}",
+    ]
     if data.meta_hint:
         lines.append(f"元数据：{data.meta_hint}")
 
     if data.lyrics.strip():
         lyric_text = data.lyrics.strip()[:_MAX_LYRICS_CHARS]
-        lines.append(f"歌词（来源：{data.lyrics_source}）：\n{lyric_text}")
+        lines.append(f"歌词/演唱文本（来源：{data.lyrics_source}）：\n{lyric_text}")
     else:
         lines.append("歌词：无（请依据音频特征推断曲风与氛围来命名）")
 
     if data.features_desc:
         lines.append(f"音频特征：{data.features_desc}")
 
+    if avoid:
+        lines.append("以下歌名已被使用，请务必避开，不得重复或高度近似：\n"
+                     + "、".join(avoid))
+
     lines.append("请输出 JSON。")
     return [
-        {"role": "system", "content": system},
+        {"role": "system", "content": _SYSTEM_ZH},
         {"role": "user", "content": "\n".join(lines)},
     ]
+
+
+def _language_rule(settings: Settings, detected: str) -> str:
+    """按检测语种给出命名语言约束。"""
+    if detected == "zh":
+        return _LANG_RULE_ZH
+    if detected == "en":
+        return _LANG_RULE_EN
+    return _LANG_RULE_ZH_ONLY if settings.language == "zh" else _LANG_RULE_EN_ONLY
 
 
 def _parse_response(resp: requests.Response) -> NamingResult:

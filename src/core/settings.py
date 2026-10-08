@@ -11,6 +11,8 @@ _SETTINGS_FILE = "settings.json"
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_ASR_BASE_URL = "https://api.siliconflow.cn/v1"
+DEFAULT_ASR_MODEL = "FunAudioLLM/SenseVoiceSmall"
 
 
 def settings_dir() -> Path:
@@ -28,12 +30,23 @@ def settings_path() -> Path:
 @dataclass(frozen=True)
 class Settings:
     """应用配置（不可变）。"""
+    # 大模型（起名）
     api_key: str = ""
     base_url: str = DEFAULT_BASE_URL
     model: str = DEFAULT_MODEL
     timeout_sec: int = 60
     concurrency: int = 4
-    language: str = "zh"   # 起名语言：zh / en
+    language: str = "zh"   # 无人声时的起名语言：zh / en
+
+    # 语音识别（语种判定）
+    asr_enabled: bool = True
+    asr_base_url: str = DEFAULT_ASR_BASE_URL
+    asr_api_key: str = ""
+    asr_model: str = DEFAULT_ASR_MODEL
+    asr_sample_sec: int = 90
+
+    # 输出行为
+    write_metadata: bool = True   # 将歌名写入 ID3 Title
 
     def with_updates(self, **kwargs) -> "Settings":
         return replace(self, **kwargs)
@@ -44,6 +57,10 @@ class Settings:
     @property
     def is_configured(self) -> bool:
         return bool(self.api_key.strip()) and bool(self.base_url.strip())
+
+    @property
+    def asr_configured(self) -> bool:
+        return bool(self.asr_api_key.strip()) and bool(self.asr_base_url.strip())
 
 
 def load_settings() -> Settings:

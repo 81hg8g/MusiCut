@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -18,6 +20,8 @@ from PyQt6.QtWidgets import (
 
 from src.core.ai_namer import AiNamerError, NamingInput, suggest_title
 from src.core.settings import (
+    DEFAULT_ASR_BASE_URL,
+    DEFAULT_ASR_MODEL,
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
     Settings,
@@ -39,7 +43,40 @@ class SettingsDialog(QDialog):
 
     def _build_ui(self, s: Settings) -> None:
         layout = QVBoxLayout(self)
-        form = QFormLayout()
+        layout.addWidget(self._build_llm_group(s))
+        layout.addWidget(self._build_asr_group(s))
+        layout.addWidget(self._build_output_group(s))
+
+        hint = QLabel(f"配置保存位置：{settings_path()}")
+        hint.setStyleSheet("color: gray; font-size: 11px;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        note = QLabel(
+            "隐私提示：启用语音识别后，音频片段会上传到 ASR 服务商以判定语种；"
+            "音频特征与歌词文本会上传到起名模型。不上传完整音频。"
+        )
+        note.setStyleSheet("color: #946200; font-size: 11px;")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        btn_row = QHBoxLayout()
+        self.btn_test = QPushButton("测试起名连接")
+        self.btn_test.clicked.connect(self._on_test)
+        btn_row.addWidget(self.btn_test)
+        btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _build_llm_group(self, s: Settings) -> QGroupBox:
+        box = QGroupBox("大模型（起名）")
+        form = QFormLayout(box)
 
         self.edit_key = QLineEdit(s.api_key)
         self.edit_key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -65,38 +102,47 @@ class SettingsDialog(QDialog):
         self.combo_lang.addItem("中文", "zh")
         self.combo_lang.addItem("英文", "en")
         self.combo_lang.setCurrentIndex(0 if s.language == "zh" else 1)
-        form.addRow("起名语言:", self.combo_lang)
+        form.addRow("无人声时语言:", self.combo_lang)
 
         self.spin_conc = QSpinBox()
         self.spin_conc.setRange(1, 16)
         self.spin_conc.setValue(s.concurrency)
         form.addRow("并发数:", self.spin_conc)
+        return box
 
-        layout.addLayout(form)
+    def _build_asr_group(self, s: Settings) -> QGroupBox:
+        box = QGroupBox("语音识别（判定中文/英文演唱）")
+        form = QFormLayout(box)
 
-        hint = QLabel(f"配置保存位置：{settings_path()}")
-        hint.setStyleSheet("color: gray; font-size: 11px;")
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        self.chk_asr = QCheckBox("启用（关闭则无法判定语种）")
+        self.chk_asr.setChecked(s.asr_enabled)
+        form.addRow("", self.chk_asr)
 
-        note = QLabel("提示：调用云端接口时，歌词与音频特征描述会上传到服务商，音频文件本身不会上传。")
-        note.setStyleSheet("color: #946200; font-size: 11px;")
-        note.setWordWrap(True)
-        layout.addWidget(note)
+        self.edit_asr_key = QLineEdit(s.asr_api_key)
+        self.edit_asr_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.edit_asr_key.setPlaceholderText("SiliconFlow API Key")
+        form.addRow("ASR Key:", self.edit_asr_key)
 
-        btn_row = QHBoxLayout()
-        self.btn_test = QPushButton("测试连接")
-        self.btn_test.clicked.connect(self._on_test)
-        btn_row.addWidget(self.btn_test)
-        btn_row.addStretch(1)
-        layout.addLayout(btn_row)
+        self.edit_asr_url = QLineEdit(s.asr_base_url or DEFAULT_ASR_BASE_URL)
+        form.addRow("ASR URL:", self.edit_asr_url)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._on_save)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        self.edit_asr_model = QLineEdit(s.asr_model or DEFAULT_ASR_MODEL)
+        form.addRow("ASR 模型:", self.edit_asr_model)
+
+        self.spin_sample = QSpinBox()
+        self.spin_sample.setRange(20, 300)
+        self.spin_sample.setSuffix(" 秒")
+        self.spin_sample.setValue(s.asr_sample_sec)
+        form.addRow("截取样长:", self.spin_sample)
+        return box
+
+    def _build_output_group(self, s: Settings) -> QGroupBox:
+        box = QGroupBox("输出")
+        form = QFormLayout(box)
+        self.chk_meta = QCheckBox("将歌名写入 MP3 的 ID3 标题（Title）")
+        self.chk_meta.setChecked(s.write_metadata)
+        form.addRow("", self.chk_meta)
+        return box
 
     def _toggle_echo(self, shown: bool) -> None:
         self.edit_key.setEchoMode(
@@ -111,6 +157,12 @@ class SettingsDialog(QDialog):
             model=self.edit_model.text().strip() or DEFAULT_MODEL,
             language=self.combo_lang.currentData(),
             concurrency=self.spin_conc.value(),
+            asr_enabled=self.chk_asr.isChecked(),
+            asr_api_key=self.edit_asr_key.text().strip(),
+            asr_base_url=self.edit_asr_url.text().strip() or DEFAULT_ASR_BASE_URL,
+            asr_model=self.edit_asr_model.text().strip() or DEFAULT_ASR_MODEL,
+            asr_sample_sec=self.spin_sample.value(),
+            write_metadata=self.chk_meta.isChecked(),
         )
 
     def _on_test(self) -> None:
