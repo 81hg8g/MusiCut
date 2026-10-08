@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QDragEnterEvent, QDropEvent
 from PyQt6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -116,6 +116,8 @@ class RenameWindow(QDialog):
         self._registry = load_registry()
         self._worker: RenameWorker | None = None
         self._last_log: Path | None = None
+        self._files_override: list[Path] | None = None
+        self.setAcceptDrops(True)
         self._build_ui()
 
     # ---------- UI ----------
@@ -126,7 +128,7 @@ class RenameWindow(QDialog):
 
         dir_row = QHBoxLayout()
         self.dir_edit = QLineEdit()
-        self.dir_edit.setPlaceholderText("选择包含 MP3 的目录...")
+        self.dir_edit.setPlaceholderText("选择包含 MP3 的目录...（也可直接拖放 MP3 文件 / 文件夹到本窗口）")
         self.btn_browse = QPushButton("浏览...")
         self.btn_browse.clicked.connect(self._choose_dir)
         dir_row.addWidget(QLabel("目录:"))
@@ -194,15 +196,19 @@ class RenameWindow(QDialog):
     def _choose_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择目录")
         if path:
+            self._files_override = None
             self.dir_edit.setText(path)
             self._scan()
 
     def _scan(self) -> int:
+        self._files_override = None
         files = self._collect_files()
         self.lbl_found.setText(f"找到 {len(files)} 个 MP3")
         return len(files)
 
     def _collect_files(self) -> list[Path]:
+        if self._files_override is not None:
+            return list(self._files_override)
         text = self.dir_edit.text().strip()
         if not text:
             return []
@@ -210,6 +216,39 @@ class RenameWindow(QDialog):
         if not folder.is_dir():
             return []
         return sorted(f for f in folder.glob("*.mp3") if f.is_file())
+
+    # ---------- 拖放 ----------
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if event.mimeData().hasUrls() and self._extract_drop_targets(event.mimeData().urls()) != ([], None):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        files, folder = self._extract_drop_targets(event.mimeData().urls())
+        if files:
+            self._files_override = files
+            self.dir_edit.setText(str(files[0].parent))
+            self.lbl_found.setText(f"已拖放 {len(files)} 个 MP3（拖放模式）")
+            self.lbl_status.setText("已接收拖放文件，点击开始执行")
+        elif folder is not None:
+            self._files_override = None
+            self.dir_edit.setText(str(folder))
+            self._scan()
+        event.acceptProposedAction()
+
+    @staticmethod
+    def _extract_drop_targets(urls) -> tuple[list[Path], Path | None]:
+        """拆出拖入的 MP3 文件与首个文件夹；含 MP3 时忽略文件夹。"""
+        files: list[Path] = []
+        folder: Path | None = None
+        for url in urls:
+            path = Path(url.toLocalFile())
+            if path.is_file() and path.suffix.lower() == ".mp3":
+                if path not in files:
+                    files.append(path)
+            elif path.is_dir() and folder is None:
+                folder = path
+        return files, folder
 
     def _registry_hint(self) -> str:
         return f"歌名库：已有 {len(self._registry.titles)} 个（全局去重）"
@@ -305,6 +344,9 @@ class RenameWindow(QDialog):
         result_list = list(results)  # type: ignore[arg-type]
         self._last_log = Path(str(log_path))
         self._registry = registry  # type: ignore[assignment]
+        if self._files_override is not None:
+            self._files_override = None
+            self.lbl_found.setText("拖放列表已失效，请重新扫描或拖放")
         self.lbl_registry.setText(self._registry_hint())
         self.btn_rollback.setEnabled(True)
 
