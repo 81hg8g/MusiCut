@@ -82,6 +82,54 @@ def detect_language(text: str) -> str:
     return LANG_UNKNOWN
 
 
+def probe_connection(settings: Settings) -> Transcript:
+    """用 1 秒 440Hz 正弦音探测 ASR 连通性；只验证 Key/URL/模型可达。"""
+    import math
+    import struct
+
+    sr = 16000
+    pcm = b"".join(
+        struct.pack("<h", int(8000 * math.sin(2 * math.pi * 440 * i / sr)))
+        for i in range(sr)
+    )
+    url = f"{settings.asr_base_url.rstrip('/')}/audio/transcriptions"
+    try:
+        resp = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {settings.asr_api_key}"},
+            files={"file": ("probe.wav", _wav_bytes(pcm, sr), "audio/wav")},
+            data={"model": settings.asr_model},
+            timeout=settings.timeout_sec + _ASR_TIMEOUT_PAD,
+        )
+    except requests.RequestException as e:
+        return Transcript(text="", language=LANG_UNKNOWN, ok=False, error=f"网络失败: {e}")
+
+    if resp.status_code == 401:
+        return Transcript(text="", language=LANG_UNKNOWN, ok=False, error="Key 无效")
+    if resp.status_code >= 400:
+        return Transcript(
+            text="", language=LANG_UNKNOWN, ok=False,
+            error=f"返回 {resp.status_code}: {resp.text[:150]}",
+        )
+    try:
+        resp.json()
+    except ValueError:
+        return Transcript(text="", language=LANG_UNKNOWN, ok=False, error="响应非 JSON")
+    return Transcript(text="", language=LANG_ZH, ok=True)
+
+
+def _wav_bytes(pcm: bytes, sample_rate: int) -> bytes:
+    """把 16bit 单声道 PCM 包成 WAV 容器。"""
+    import struct
+
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF", 36 + len(pcm), b"WAVE", b"fmt ", 16, 1, 1,
+        sample_rate, sample_rate * 2, 2, 16, b"data", len(pcm),
+    )
+    return header + pcm
+
+
 def transcribe(path: Path, settings: Settings) -> Transcript:
     """转写音频片段；失败时返回 ok=False 的未知语种结果（不抛异常）。"""
     if not settings.asr_enabled:

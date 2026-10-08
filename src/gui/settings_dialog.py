@@ -136,6 +136,10 @@ class SettingsDialog(QDialog):
         self.spin_sample.setValue(s.asr_sample_sec)
         form.addRow("截取样长:", self.spin_sample)
 
+        self.btn_test_asr = QPushButton("测试 ASR 连接")
+        self.btn_test_asr.clicked.connect(self._on_test_asr)
+        form.addRow("", self.btn_test_asr)
+
         self.chk_vocal = QCheckBox("本地人声预筛（Silero VAD；无本地歌词且判定无人声时跳过 ASR，省费用）")
         self.chk_vocal.setChecked(s.vocal_filter_enabled)
         form.addRow("", self.chk_vocal)
@@ -208,6 +212,30 @@ class SettingsDialog(QDialog):
         finally:
             self.btn_test.setEnabled(True)
             self.btn_test.setText("测试连接")
+
+    def _on_test_asr(self) -> None:
+        candidate = self._collect()
+        if not candidate.asr_enabled:
+            QMessageBox.warning(self, "提示", "ASR 未启用，请先勾选启用")
+            return
+        if not candidate.asr_api_key.strip():
+            QMessageBox.warning(self, "提示", "请先填写 ASR Key")
+            return
+        self.btn_test_asr.setEnabled(False)
+        self.btn_test_asr.setText("测试中...")
+        try:
+            from src.core.asr_client import probe_connection
+            result = probe_connection(candidate)
+            if result.ok:
+                QMessageBox.information(
+                    self, "连接成功",
+                    f"ASR 服务可达（{candidate.asr_model}）",
+                )
+            else:
+                QMessageBox.critical(self, "连接失败", result.error or "未知错误")
+        finally:
+            self.btn_test_asr.setEnabled(True)
+            self.btn_test_asr.setText("测试 ASR 连接")
 
     def _on_save(self) -> None:
         new_settings = self._collect()
