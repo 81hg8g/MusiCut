@@ -93,7 +93,7 @@ class RenameWorker(QThread):
                 self.failed.emit("没有任何曲目成功起名，未执行重命名")
                 return
             plans = plan_renames([(r.path, r.title) for r in ok_records])
-            log_path = default_log_path(self.files[0].parent)
+            log_path = default_log_path()
             results = execute_renames(
                 plans, log_path=log_path, write_metadata=self.settings.write_metadata
             )

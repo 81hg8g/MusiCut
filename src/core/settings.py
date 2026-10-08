@@ -36,7 +36,7 @@ class Settings:
     model: str = DEFAULT_MODEL
     timeout_sec: int = 60
     concurrency: int = 4
-    language: str = "zh"   # 无人声时的起名语言：zh / en
+    language: str = "en"   # 无人声时的起名语言：zh / en
 
     # 语音识别（语种判定）
     asr_enabled: bool = True

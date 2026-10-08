@@ -12,6 +12,13 @@ def app_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def app_dir() -> Path:
+    """软件所在目录：打包后为 exe 所在目录，源码运行时为项目根目录。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]
+
+
 def resource_path(*parts: str) -> Path:
     """拼接资源路径，例如 resource_path('assets', 'MusiCut.ico')。"""
     return app_root().joinpath(*parts)

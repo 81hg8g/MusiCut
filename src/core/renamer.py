@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from ..utils.paths import app_dir
 from .tag_writer import TagWriteError, write_title
 
 _LOG_HEADER = ["时间", "目录", "原文件名", "新文件名", "标签", "结果", "说明"]
+_LOG_NAME = "重命名记录.csv"
 
 
 @dataclass(frozen=True)
@@ -107,17 +109,20 @@ def _rename_one(plan: RenamePlan, dry_run: bool, write_metadata: bool) -> Rename
     return RenameResult(src, dst, success=True, tagged=tagged, tag_error=tag_error)
 
 
-def default_log_path(directory: Path) -> Path:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return directory / f"重命名记录_{stamp}.csv"
+def default_log_path() -> Path:
+    """记录文件固定放在软件所在目录，单一文件累加历史。"""
+    return app_dir() / _LOG_NAME
 
 
 def write_log(log_path: Path, results: list[RenameResult]) -> None:
-    """写 CSV 日志，UTF-8-SIG 便于 Excel 打开。"""
+    """追加写 CSV 日志，UTF-8-SIG 便于 Excel 打开。"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with log_path.open("w", newline="", encoding="utf-8-sig") as f:
+    is_new = not log_path.exists() or log_path.stat().st_size == 0
+    encoding = "utf-8-sig" if is_new else "utf-8"
+    with log_path.open("a", newline="", encoding=encoding) as f:
         writer = csv.writer(f)
-        writer.writerow(_LOG_HEADER)
+        if is_new:
+            writer.writerow(_LOG_HEADER)
         for r in results:
             status = "成功" if r.success else "失败"
             if r.skipped:
@@ -140,24 +145,29 @@ def write_log(log_path: Path, results: list[RenameResult]) -> None:
 
 
 def rollback_from_log(log_path: Path) -> tuple[int, int]:
-    """依据日志回滚重命名，返回 (成功数, 失败数)。"""
+    """回滚日志中最近一批重命名，返回 (成功数, 失败数)。"""
     if not log_path.exists():
         raise FileNotFoundError(f"日志不存在: {log_path}")
 
-    ok = fail = 0
     with log_path.open("r", encoding="utf-8-sig") as f:
-        for row in csv.DictReader(f):
-            if row.get("结果") != "成功":
-                continue
-            directory = Path(row["目录"])
-            current = directory / row["新文件名"]
-            original = directory / row["原文件名"]
-            if not current.exists() or original.exists():
-                fail += 1
-                continue
-            try:
-                current.rename(original)
-                ok += 1
-            except OSError:
-                fail += 1
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return 0, 0
+
+    last_batch = rows[-1].get("时间", "")
+    ok = fail = 0
+    for row in rows:
+        if row.get("时间") != last_batch or row.get("结果") != "成功":
+            continue
+        directory = Path(row["目录"])
+        current = directory / row["新文件名"]
+        original = directory / row["原文件名"]
+        if not current.exists() or original.exists():
+            fail += 1
+            continue
+        try:
+            current.rename(original)
+            ok += 1
+        except OSError:
+            fail += 1
     return ok, fail
