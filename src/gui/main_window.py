@@ -34,6 +34,7 @@ from src.core.analyzer import (
 from src.core.ffmpeg_ops import detect_silences
 from src.core.splitter import SplitResult, SplitTask, execute_task, plan_output_paths
 from src.gui.editor_window import EditorWindow
+from src.gui.rename_window import RenameWindow
 
 
 _COL_FLAG = 0
@@ -238,6 +239,9 @@ class MainWindow(QMainWindow):
         bottom.addWidget(self.btn_analyze)
         bottom.addWidget(self.btn_split)
         bottom.addWidget(self.btn_cancel)
+        self.btn_rename = QPushButton("批量重命名（AI 起名）")
+        self.btn_rename.clicked.connect(self._open_rename_window)
+        bottom.addWidget(self.btn_rename)
         bottom.addStretch(1)
         self.lbl_status = QLabel("就绪")
         bottom.addWidget(self.lbl_status)
@@ -415,6 +419,11 @@ class MainWindow(QMainWindow):
                 status = f"{cnt} 首"
                 item.setForeground(_COL_STATUS, QColor("black"))
             item.setText(_COL_STATUS, status)
+
+    def _open_rename_window(self) -> None:
+        """打开独立批量重命名窗口"""
+        window = RenameWindow(self)
+        window.exec()
 
     def _on_split(self) -> None:
         analyses = [a for a in self._analyses.values() if a.error is None]
