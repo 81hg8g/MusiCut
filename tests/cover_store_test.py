@@ -40,7 +40,7 @@ def test_index_paths_uses_settings_dir(tmp_settings):
 
 
 def test_default_models_constants():
-    assert cs.DEFAULT_VL_MODEL == "Qwen/Qwen2.5-VL-7B-Instruct"
+    assert cs.DEFAULT_VL_MODEL == "Qwen/Qwen3-VL-8B-Instruct"
     assert cs.DEFAULT_EMBED_MODEL == "BAAI/bge-m3"
 
 

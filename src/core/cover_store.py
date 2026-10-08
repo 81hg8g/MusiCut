@@ -16,7 +16,7 @@ from .settings import settings_dir
 _INDEX_FILE = "cover_index.json"
 _EMB_FILE = "cover_embeddings.npz"
 
-DEFAULT_VL_MODEL = "Qwen/Qwen2.5-VL-7B-Instruct"
+DEFAULT_VL_MODEL = "Qwen/Qwen3-VL-8B-Instruct"
 DEFAULT_EMBED_MODEL = "BAAI/bge-m3"
 
 _EMBED_DIM = 1024
