@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -134,6 +135,27 @@ class SettingsDialog(QDialog):
         self.spin_sample.setSuffix(" 秒")
         self.spin_sample.setValue(s.asr_sample_sec)
         form.addRow("截取样长:", self.spin_sample)
+
+        self.chk_vocal = QCheckBox("本地人声预筛（Silero VAD；无本地歌词且判定无人声时跳过 ASR，省费用）")
+        self.chk_vocal.setChecked(s.vocal_filter_enabled)
+        form.addRow("", self.chk_vocal)
+
+        self.spin_vocal = QDoubleSpinBox()
+        self.spin_vocal.setRange(0.01, 0.50)
+        self.spin_vocal.setSingleStep(0.01)
+        self.spin_vocal.setDecimals(2)
+        self.spin_vocal.setValue(s.vocal_threshold)
+        form.addRow("人声占比阈值:", self.spin_vocal)
+
+        from src.core import vocal_detect
+        ok = vocal_detect.is_available()
+        status = "可用" if ok else f"不可用（{vocal_detect.load_error() or '未知原因'}）"
+        lbl_vad = QLabel(f"本地人声检测（Silero VAD）：{status}")
+        lbl_vad.setWordWrap(True)
+        lbl_vad.setStyleSheet(
+            f"color: {'#1a7f37' if ok else '#a33'}; font-size: 11px;"
+        )
+        form.addRow("", lbl_vad)
         return box
 
     def _build_output_group(self, s: Settings) -> QGroupBox:
@@ -162,6 +184,8 @@ class SettingsDialog(QDialog):
             asr_base_url=self.edit_asr_url.text().strip() or DEFAULT_ASR_BASE_URL,
             asr_model=self.edit_asr_model.text().strip() or DEFAULT_ASR_MODEL,
             asr_sample_sec=self.spin_sample.value(),
+            vocal_filter_enabled=self.chk_vocal.isChecked(),
+            vocal_threshold=self.spin_vocal.value(),
             write_metadata=self.chk_meta.isChecked(),
         )
 

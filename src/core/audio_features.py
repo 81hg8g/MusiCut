@@ -11,6 +11,8 @@ from pathlib import Path
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
+from . import vocal_detect
+
 _SR = 16000        # 采样率
 _FRAME = 2048      # 帧长
 _HOP = 1024        # 帧移
@@ -38,6 +40,10 @@ class AudioFeatures:
     band_high: float
     zcr: float                 # 过零率
     onset_density: float       # 每秒起音数
+    vocal_score: float = 0.0       # Silero VAD 语音帧占比 0~1
+    has_vocal: bool = True         # 本地判定是否含人声（默认保守为真）
+    vocal_available: bool = True   # VAD 模型是否可用
+    vocal_note: str = ""           # VAD 异常说明
 
     def describe(self) -> str:
         """转换为中文描述，供 prompt 使用。"""
@@ -50,6 +56,7 @@ class AudioFeatures:
             f"频谱分布：低频{self._pct(self.band_low)}、中频{self._pct(self.band_mid)}、高频{self._pct(self.band_high)}",
             f"打击感{self._perc_word()}",
             f"起音密度 {self.onset_density:.1f} 次/秒",
+            f"本地人声判定：{self._vocal_word()}(语音占比 {self.vocal_score * 100:.0f}%)",
         ]
         return "；".join(parts)
 
@@ -66,6 +73,9 @@ class AudioFeatures:
             "band_high": round(self.band_high, 3),
             "zcr": round(self.zcr, 4),
             "onset_density": round(self.onset_density, 2),
+            "vocal_score": round(self.vocal_score, 3),
+            "has_vocal": self.has_vocal,
+            "vocal_available": self.vocal_available,
         }
 
     # --- 描述词 ---
@@ -115,6 +125,11 @@ class AudioFeatures:
             return "中等"
         return "弱（偏氛围/旋律）"
 
+    def _vocal_word(self) -> str:
+        if not self.vocal_available:
+            return "未知（检测不可用）"
+        return "检测到人声/演唱" if self.has_vocal else "未检测到人声（疑似纯器乐）"
+
     @staticmethod
     def _pct(v: float) -> str:
         return f"{v * 100:.0f}%"
@@ -143,8 +158,8 @@ def _extract_pcm(path: Path) -> np.ndarray:
     return data.astype(np.float32) / 32768.0
 
 
-def analyze(path: Path) -> AudioFeatures:
-    """分析音频文件，返回客观特征。"""
+def analyze(path: Path, vocal_threshold: float = 0.05) -> AudioFeatures:
+    """分析音频文件，返回客观特征（含本地人声判定）。"""
     pcm = _extract_pcm(path)
     duration = pcm.size / _SR
 
@@ -163,6 +178,8 @@ def analyze(path: Path) -> AudioFeatures:
     band_low, band_mid, band_high = _band_ratios(spectrum, freqs)
     tempo, onset_density, percussive = _rhythm(spectrum)
 
+    verdict = vocal_detect.detect(pcm, min_ratio=vocal_threshold)
+
     return AudioFeatures(
         duration_sec=duration,
         loudness_db=float(loudness_db),
@@ -175,6 +192,10 @@ def analyze(path: Path) -> AudioFeatures:
         band_high=band_high,
         zcr=float(np.mean(np.abs(np.diff(np.sign(win), axis=1)) > 0)),
         onset_density=onset_density,
+        vocal_score=verdict.speech_ratio,
+        has_vocal=verdict.has_vocal,
+        vocal_available=verdict.available,
+        vocal_note=verdict.error or "",
     )
 
 

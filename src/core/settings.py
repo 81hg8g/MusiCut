@@ -45,6 +45,10 @@ class Settings:
     asr_model: str = DEFAULT_ASR_MODEL
     asr_sample_sec: int = 90
 
+    # 本地人声预筛（Silero VAD；跳过无谓的 ASR 调用）
+    vocal_filter_enabled: bool = True
+    vocal_threshold: float = 0.05   # 语音帧占比达到该值即认为"有人声"
+
     # 输出行为
     write_metadata: bool = True   # 将歌名写入 ID3 Title
 

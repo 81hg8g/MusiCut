@@ -30,6 +30,8 @@ class NamingRecord:
     features_desc: str = ""
     error: str | None = None
     attempts: int = 1
+    asr_note: str = ""          # ASR 调用决策说明
+    local_vocal: str = "未知"   # 本地人声判定：有 / 无 / 未知
 
     @property
     def ok(self) -> bool:
@@ -77,33 +79,45 @@ def _uniquify(base: str, used: _UsedTitles) -> str:
     return candidate
 
 
-def _resolve_lyrics(path: Path, settings: Settings) -> tuple[str, str, str]:
-    """返回 (歌词文本, 来源, 检测语种)。"""
-    transcript = transcribe(path, settings) if settings.asr_enabled else None
-    local = read_lyrics(path)
+def _should_call_asr(
+    settings: Settings, local, feats
+) -> tuple[bool, str]:
+    """决定是否调用 ASR，返回 (是否调用, 说明)。"""
+    if not settings.asr_enabled:
+        return False, "ASR 未启用"
+    if not settings.asr_configured:
+        return False, "未配置 ASR Key"
+    if local.has_lyrics:
+        return False, "已用本地歌词"
+    if settings.vocal_filter_enabled and feats is not None and not feats.has_vocal:
+        return False, "本地判定无人声"
+    return True, ""
+
+
+def _resolve_text(
+    path: Path, settings: Settings, local, feats
+) -> tuple[str, str, str, str]:
+    """返回 (文本, 来源, 语种, ASR决策说明)。"""
+    call_asr, note = _should_call_asr(settings, local, feats)
+    transcript = transcribe(path, settings) if call_asr else None
 
     if local.has_lyrics:
-        source = local.source
+        text, source = local.text, local.source
     elif transcript is not None and transcript.has_vocal:
-        source = "asr"
+        text, source = transcript.text, "asr"
     else:
-        source = "none"
-
-    if source == "asr" and transcript is not None:
-        text = transcript.text
-    elif source == "none":
-        text = ""
-    else:
-        text = local.text
+        text, source = "", "none"
 
     if transcript is not None and transcript.ok:
         language = transcript.language
+        if note == "":
+            note = f"已调用({language})"
     elif text:
         from .asr_client import detect_language
         language = detect_language(text)
     else:
         language = LANG_UNKNOWN
-    return text, source, language
+    return text, source, language, note
 
 
 def naming_one(
@@ -112,17 +126,23 @@ def naming_one(
     used: _UsedTitles,
     registry: TitleRegistry,
 ) -> NamingRecord:
-    """为单个文件起名：ASR → 特征 → 模型（含重名重试）。"""
-    lyrics_text, lyrics_source, language = _resolve_lyrics(path, settings)
+    """为单个文件起名：本地歌词/特征 → 按需 ASR → 模型（含重名重试）。"""
+    local = read_lyrics(path)
 
     features_desc = ""
     duration = 0.0
+    feats = None
     try:
-        feats = analyze(path)
+        feats = analyze(path, vocal_threshold=settings.vocal_threshold)
         features_desc = feats.describe()
         duration = feats.duration_sec
     except AudioFeatureError:
         pass
+
+    lyrics_text, lyrics_source, language, asr_note = _resolve_text(
+        path, settings, local, feats
+    )
+    local_vocal = "未知" if feats is None else ("有" if feats.has_vocal else "无")
 
     data = NamingInput(
         file_name=path.name,
@@ -142,6 +162,7 @@ def naming_one(
             return NamingRecord(
                 path=path, lyrics_source=lyrics_source, detected_language=language,
                 features_desc=features_desc, error=str(e), attempts=attempt,
+                asr_note=asr_note, local_vocal=local_vocal,
             )
         last_title, last_reason = result.title, result.reason
         if used.try_claim(result.title):
@@ -149,6 +170,7 @@ def naming_one(
                 path=path, title=result.title, reason=result.reason,
                 lyrics_source=lyrics_source, detected_language=language,
                 features_desc=features_desc, attempts=attempt,
+                asr_note=asr_note, local_vocal=local_vocal,
             )
 
     # 多次重名 → 追加序号兜底，确保绝不重名
@@ -157,6 +179,7 @@ def naming_one(
         path=path, title=final, reason=last_reason,
         lyrics_source=lyrics_source, detected_language=language,
         features_desc=features_desc, attempts=_MAX_ATTEMPTS,
+        asr_note=asr_note, local_vocal=local_vocal,
     )
 
 

@@ -47,6 +47,14 @@ _COL_SRC = 5
 
 _LANG_LABEL = {"zh": "中文", "en": "英文", "unknown": "无人声/未知"}
 
+_SRC_LABEL = {
+    "embedded": "内嵌标签",
+    "lrc": ".lrc 文件",
+    "txt": ".txt 文件",
+    "asr": "ASR 转写",
+    "none": "无歌词",
+}
+
 
 class RenameWorker(QThread):
     """后台执行：起名 → 规划 → 写标签 + 重命名。"""
@@ -267,13 +275,16 @@ class RenameWindow(QDialog):
         row = self.table.rowCount()
         self.table.insertRow(row)
         lang = _LANG_LABEL.get(record.detected_language, record.detected_language)
+        src_label = _SRC_LABEL.get(record.lyrics_source, record.lyrics_source)
+        if record.asr_note:
+            src_label = f"{src_label}（{record.asr_note}）"
         if record.ok:
             status, color = "成功", QColor("green")
             new_name = f"{record.title}{record.path.suffix}"
-            reason, note = record.reason, record.lyrics_source
+            reason = record.reason
         else:
             status, color = "失败", QColor("red")
-            new_name, reason, note = "-", record.error or "", record.lyrics_source
+            new_name, reason = "-", record.error or ""
 
         for col, text in (
             (_COL_STATUS, status),
@@ -281,7 +292,7 @@ class RenameWindow(QDialog):
             (_COL_NEW, new_name),
             (_COL_LANG, lang),
             (_COL_REASON, reason),
-            (_COL_SRC, note),
+            (_COL_SRC, src_label),
         ):
             item = QTableWidgetItem(text)
             if col == _COL_STATUS:
