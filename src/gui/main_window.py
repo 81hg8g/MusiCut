@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src import __version__
 from src.core.analyzer import (
     FileAnalysis,
     TrackFlag,
@@ -132,7 +133,7 @@ class SplitWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("MusiCut - 歌单自动切分")
+        self.setWindowTitle(f"MusiCut v{__version__} - 歌单自动切分")
         self.resize(1100, 750)
 
         self._analyses: dict[Path, FileAnalysis] = {}
