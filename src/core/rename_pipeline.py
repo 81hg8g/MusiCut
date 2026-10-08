@@ -111,12 +111,14 @@ def _resolve_text(
     if transcript is not None and transcript.ok:
         language = transcript.language
         if note == "":
-            note = f"已调用({language})"
+            note = f"已调用({language})" if transcript.has_vocal else "已调用（未识别出人声）"
     elif text:
         from .asr_client import detect_language
         language = detect_language(text)
     else:
         language = LANG_UNKNOWN
+    if transcript is not None and transcript.error:
+        note = f"ASR 调用失败 - {transcript.error}"
     return text, source, language, note
 
 
