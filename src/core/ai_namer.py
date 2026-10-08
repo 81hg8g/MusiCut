@@ -39,6 +39,10 @@ class AiNamerError(RuntimeError):
     pass
 
 
+class AiContentError(AiNamerError):
+    """模型输出内容畸形（瞬时错误，可重试）。"""
+
+
 @dataclass(frozen=True)
 class NamingResult:
     title: str
@@ -61,15 +65,20 @@ def suggest_title(
     settings: Settings,
     data: NamingInput,
     avoid: Sequence[str] = (),
+    temperature: float = 1.0,
 ) -> NamingResult:
-    """调用大模型为单曲起名。avoid 为需避让的已用歌名。"""
+    """调用大模型为单曲起名。avoid 为需避让的已用歌名。
+
+    temperature 控制采样温度：高温易触发 response_format 回声等畸形输出，
+    重试末轮可降至 0.3。
+    """
     if not settings.is_configured:
         raise AiNamerError("未配置 API Key，请先在设置中填写")
 
     payload = {
         "model": settings.model,
         "messages": _build_messages(settings, data, avoid),
-        "temperature": 1.0,
+        "temperature": temperature,
         "response_format": {"type": "json_object"},
         "stream": False,
     }
@@ -150,10 +159,13 @@ def _parse_response(resp: requests.Response) -> NamingResult:
         raise AiNamerError(f"响应结构异常: {str(body)[:200]}") from e
 
     data = _extract_json(content)
+    # title 键缺失（如回声 {"type": "json_object"}）或为空白，均属瞬时内容畸形
     title = str(data.get("title", "")).strip()
     if not title:
-        raise AiNamerError(f"模型未返回歌名: {content[:200]}")
-    return NamingResult(title=_sanitize_title(title), reason=str(data.get("reason", "")).strip())
+        raise AiContentError(f"模型未返回歌名: {content[:200]}")
+    title = _sanitize_title(title)
+    _validate_title(title)
+    return NamingResult(title=title, reason=str(data.get("reason", "")).strip())
 
 
 def _extract_json(text: str) -> dict:
@@ -172,8 +184,8 @@ def _extract_json(text: str) -> dict:
                 return parsed
         except json.JSONDecodeError:
             pass
-    # 兜底：整段文本当作歌名
-    return {"title": text.splitlines()[0] if text else "", "reason": ""}
+    # 接口已强制 response_format=json_object；纯文本/畸形输出视为内容错误
+    raise AiContentError("模型未返回合法 JSON")
 
 
 def _sanitize_title(title: str) -> str:
@@ -183,6 +195,15 @@ def _sanitize_title(title: str) -> str:
     for ch in '\\/:*?"<>|':
         title = title.replace(ch, "")
     return title.strip()[:50]
+
+
+def _validate_title(title: str) -> None:
+    """拦截 response_format 回声（json_object / JSON）与残留花括号等畸形标题。"""
+    if "{" in title or "}" in title:
+        raise AiContentError("歌名包含非法字符: 花括号")
+    lowered = title.strip().lower()
+    if "json_object" in lowered or lowered == "json":
+        raise AiContentError("模型回显了 JSON 模式标记")
 
 
 def _fmt_dur(sec: float) -> str:

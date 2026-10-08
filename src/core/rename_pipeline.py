@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .ai_namer import AiNamerError, NamingInput, suggest_title
+from .ai_namer import AiContentError, AiNamerError, NamingInput, suggest_title
 from .asr_client import LANG_UNKNOWN, transcribe
 from .audio_features import AudioFeatureError, analyze
 from .lyrics_reader import read_lyrics
@@ -156,11 +156,22 @@ def naming_one(
     )
 
     last_title, last_reason = "", ""
+    last_content_error = ""
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         avoid = tuple(registry.recent()) + used.snapshot()
+        # 前 _MAX_ATTEMPTS-1 次保持高温 1.0；最后一次降温 0.3，
+        # 规避 DeepSeek 高温下高频回声 {"type": "json_object"} 的问题
+        temperature = 0.3 if attempt == _MAX_ATTEMPTS else 1.0
         try:
-            result = suggest_title(settings, data, avoid=avoid)
+            result = suggest_title(
+                settings, data, avoid=avoid, temperature=temperature
+            )
+        except AiContentError as e:
+            # 模型输出畸形（瞬时错误）：记录后继续下一次尝试
+            last_content_error = str(e)
+            continue
         except AiNamerError as e:
+            # 配置/网络等硬错误：不重试，立即失败
             return NamingRecord(
                 path=path, lyrics_source=lyrics_source, detected_language=language,
                 features_desc=features_desc, error=str(e), attempts=attempt,
@@ -174,6 +185,15 @@ def naming_one(
                 features_desc=features_desc, attempts=attempt,
                 asr_note=asr_note, local_vocal=local_vocal,
             )
+
+    # 三次均为内容畸形 → 返回失败记录
+    if last_content_error:
+        return NamingRecord(
+            path=path, lyrics_source=lyrics_source, detected_language=language,
+            features_desc=features_desc, error=last_content_error,
+            attempts=_MAX_ATTEMPTS,
+            asr_note=asr_note, local_vocal=local_vocal,
+        )
 
     # 多次重名 → 追加序号兜底，确保绝不重名
     final = _uniquify(last_title, used)
