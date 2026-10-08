@@ -15,7 +15,7 @@ from .settings import Settings
 from .title_registry import TitleRegistry, normalize
 
 _MAX_ATTEMPTS = 3
-_AVOID_LIMIT = 80
+_AVOID_LIMIT = 20
 
 _CN_NUMERALS = ("II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X")
 

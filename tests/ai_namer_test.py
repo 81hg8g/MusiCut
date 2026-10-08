@@ -315,3 +315,54 @@ def test_run_batch_order_and_progress(tmp_path, monkeypatch):
     assert [r.path for r in records] == files
     assert all(r.ok for r in records)
     assert seen == [1, 2]
+
+
+# ---- 命名风格与避让规模（A+C：风格锚定 + 压缩歌名库提示）----
+
+def test_system_prompt_has_style_anchor_and_banned_words():
+    # 风格锚定 + 语域引导 + 俗套词黑名单，防止退回流行榜单式命名
+    assert "A&R" in an._SYSTEM_ZH
+    assert "语域" in an._SYSTEM_ZH
+    assert "严禁" in an._SYSTEM_ZH
+    for word in ("夜", "梦", "光", "影", "night", "dream", "light"):
+        assert word in an._SYSTEM_ZH
+
+
+def test_registry_recent_default_capped():
+    from src.core.title_registry import _PROMPT_SAMPLE
+
+    reg = TitleRegistry(titles=tuple(f"旧{i}" for i in range(100)))
+    recent = reg.recent()
+    assert len(recent) == _PROMPT_SAMPLE
+    assert recent[-1] == "旧99"
+
+
+def test_used_titles_snapshot_default_capped():
+    used = rp._UsedTitles(frozenset())
+    for i in range(100):
+        used.try_claim(f"新{i}")
+    snap = used.snapshot()
+    assert len(snap) == rp._AVOID_LIMIT
+    assert snap[-1] == "新99"
+
+
+def test_naming_one_avoid_list_is_bounded(tmp_path, monkeypatch):
+    from src.core.title_registry import _PROMPT_SAMPLE
+
+    _patch_prereqs(monkeypatch)
+    captured: dict = {}
+
+    def fake_suggest(settings, data, avoid=(), temperature=1.0):
+        captured["avoid"] = avoid
+        return NamingResult(title="玄武岩纪", reason="地质意象")
+
+    monkeypatch.setattr(rp, "suggest_title", fake_suggest)
+    used = rp._UsedTitles(frozenset())
+    for i in range(100):
+        used.try_claim(f"新{i}")
+    reg = TitleRegistry(titles=tuple(f"旧{i}" for i in range(100)))
+
+    rp.naming_one(_settings(), tmp_path / "a.mp3", used, reg)
+
+    # 避让列表 = 歌名库最近 20 + 本批已用 20，不再膨胀到 140
+    assert len(captured["avoid"]) == _PROMPT_SAMPLE + rp._AVOID_LIMIT

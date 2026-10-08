@@ -10,7 +10,7 @@ from pathlib import Path
 from .settings import settings_dir
 
 _REGISTRY_FILE = "used_titles.json"
-_PROMPT_SAMPLE = 60   # 传给模型避让的最近歌名数量
+_PROMPT_SAMPLE = 20   # 传给模型避让的最近歌名数量（过多会使模型模仿旧名风格，抑制新意）
 
 
 def registry_path() -> Path:
