@@ -204,7 +204,19 @@ class RenameWindow(QDialog):
         self._files_override = None
         files = self._collect_files()
         self.lbl_found.setText(f"找到 {len(files)} 个 MP3")
+        self._fill_preview(files)
         return len(files)
+
+    def _fill_preview(self, files: list[Path]) -> None:
+        """把待处理文件列进表格，便于执行前核对。"""
+        self.table.setRowCount(0)
+        for path in files:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            status = QTableWidgetItem("待处理")
+            status.setForeground(QColor("gray"))
+            self.table.setItem(row, _COL_STATUS, status)
+            self.table.setItem(row, _COL_OLD, QTableWidgetItem(path.name))
 
     def _collect_files(self) -> list[Path]:
         if self._files_override is not None:
@@ -230,6 +242,7 @@ class RenameWindow(QDialog):
             self.dir_edit.setText(str(files[0].parent))
             self.lbl_found.setText(f"已拖放 {len(files)} 个 MP3（拖放模式）")
             self.lbl_status.setText("已接收拖放文件，点击开始执行")
+            self._fill_preview(files)
         elif folder is not None:
             self._files_override = None
             self.dir_edit.setText(str(folder))
