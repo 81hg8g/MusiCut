@@ -16,6 +16,7 @@ from .settings import Settings
 
 _CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
+_LATIN_WORD_RE = re.compile(r"[A-Za-z]+")
 _ASR_TIMEOUT_PAD = 30
 
 LANG_ZH = "zh"          # 含中文发音
@@ -74,12 +75,14 @@ def _extract_sample(path: Path, start: float, seconds: int) -> bytes:
 
 
 def detect_language(text: str) -> str:
-    """依据转写文本判定语种。"""
-    if _CJK_RE.search(text):
-        return LANG_ZH
-    if _LATIN_RE.search(text):
-        return LANG_EN
-    return LANG_UNKNOWN
+    """依据转写文本判定语种：汉字数需超过英文单词数的 2 倍才判中文。
+    歌唱场景 ASR 常幻觉出零星汉字/假名，偏向英文可避免整首英文歌被
+    误判成中文；中英双语歌判为英文也符合"中文歌可用英文名"的约定。"""
+    cjk = len(_CJK_RE.findall(text))
+    latin_words = len(_LATIN_WORD_RE.findall(text))
+    if cjk == 0 and latin_words == 0:
+        return LANG_UNKNOWN
+    return LANG_ZH if cjk > latin_words * 2 else LANG_EN
 
 
 def probe_connection(settings: Settings) -> Transcript:
