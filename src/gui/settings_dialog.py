@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -56,6 +57,7 @@ class SettingsDialog(QDialog):
         note = QLabel(
             "隐私提示：启用语音识别后，音频片段会上传到 ASR 服务商以判定语种；"
             "音频特征与歌词文本会上传到起名模型。不上传完整音频。"
+            "启用封面后，封面图片将上传视觉模型分析意境（每张仅在首次索引时上传一次）。"
         )
         note.setStyleSheet("color: #946200; font-size: 11px;")
         note.setWordWrap(True)
@@ -168,7 +170,28 @@ class SettingsDialog(QDialog):
         self.chk_meta = QCheckBox("将歌名写入 MP3 的 ID3 标题（Title）")
         self.chk_meta.setChecked(s.write_metadata)
         form.addRow("", self.chk_meta)
+
+        self.chk_cover = QCheckBox(
+            "起名后自动从封面库选择意境图片写入封面（ID3 APIC）"
+        )
+        self.chk_cover.setChecked(s.cover_enabled)
+        form.addRow("", self.chk_cover)
+
+        self.edit_cover_dir = QLineEdit(s.cover_dir)
+        self.btn_cover_browse = QPushButton("浏览...")
+        self.btn_cover_browse.clicked.connect(self._on_cover_browse)
+        cover_row = QHBoxLayout()
+        cover_row.addWidget(self.edit_cover_dir, 1)
+        cover_row.addWidget(self.btn_cover_browse)
+        cover_widget = QWidget()
+        cover_widget.setLayout(cover_row)
+        form.addRow("封面目录:", cover_widget)
         return box
+
+    def _on_cover_browse(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "选择封面目录")
+        if path:
+            self.edit_cover_dir.setText(path)
 
     def _toggle_echo(self, shown: bool) -> None:
         self.edit_key.setEchoMode(
@@ -191,6 +214,8 @@ class SettingsDialog(QDialog):
             vocal_filter_enabled=self.chk_vocal.isChecked(),
             vocal_threshold=self.spin_vocal.value(),
             write_metadata=self.chk_meta.isChecked(),
+            cover_enabled=self.chk_cover.isChecked(),
+            cover_dir=self.edit_cover_dir.text().strip() or r"H:\图\AlbumCover",
         )
 
     def _on_test(self) -> None:

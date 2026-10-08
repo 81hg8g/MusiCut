@@ -51,6 +51,8 @@ class Settings:
 
     # 输出行为
     write_metadata: bool = True   # 将歌名写入 ID3 Title
+    cover_enabled: bool = True   # 为音频匹配封面
+    cover_dir: str = r"H:\图\AlbumCover"   # 封面素材目录
 
     def with_updates(self, **kwargs) -> "Settings":
         return replace(self, **kwargs)

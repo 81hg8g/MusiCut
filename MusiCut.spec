@@ -10,7 +10,7 @@ a = Analysis(
     hookspath=['hooks'],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['torch', 'torchvision', 'torchaudio', 'sympy', 'tensorflow', 'stanza', 'spacy', 'PIL', 'cv2', 'easyocr', 'whisper', 'faster_whisper', 'ctranslate2', 'transformers', 'openai', 'sentencepiece', 'tokenizers', 'pandas', 'matplotlib', 'seaborn', 'sklearn', 'scipy', 'numba', 'llvmlite', 'cffi'],
+    excludes=['torch', 'torchvision', 'torchaudio', 'sympy', 'tensorflow', 'stanza', 'spacy', 'cv2', 'easyocr', 'whisper', 'faster_whisper', 'ctranslate2', 'transformers', 'openai', 'sentencepiece', 'tokenizers', 'pandas', 'matplotlib', 'seaborn', 'sklearn', 'scipy', 'numba', 'llvmlite', 'cffi'],
     noarchive=False,
     optimize=0,
 )

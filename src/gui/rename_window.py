@@ -1,6 +1,8 @@
 """独立批量重命名窗口：AI 起名 + 原地重命名"""
 from __future__ import annotations
 
+import os
+from collections.abc import Sequence
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -21,6 +23,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from src.core.cover_indexer import ScanDiff, run_incremental
+from src.core.cover_matcher import CoverMatch, CoverQuery, match_all
+from src.core.cover_registry import UsedCovers, load_used, register_used
+from src.core.cover_store import CoverIndex, load_embeddings, load_index
 from src.core.rename_pipeline import NamingRecord, run_batch
 from src.core.renamer import (
     RenameResult,
@@ -44,6 +50,7 @@ _COL_NEW = 2
 _COL_LANG = 3
 _COL_REASON = 4
 _COL_SRC = 5
+_COL_COVER = 6
 
 _LANG_LABEL = {"zh": "中文", "en": "英文", "unknown": "无人声/未知"}
 
@@ -56,10 +63,99 @@ _SRC_LABEL = {
 }
 
 
+# ---------- 封面相关纯函数 ----------
+
+def resolve_do_cover(cover_enabled: bool, write_metadata: bool) -> bool:
+    """封面随标题在同一次写入中完成；标题写入关闭时封面无法单独写入。"""
+    return cover_enabled and write_metadata
+
+
+def cover_summary(index: CoverIndex, used: UsedCovers) -> tuple[int, int, int]:
+    """返回 (素材总数(非 missing), 已用数(位于当前 folder), 剩余可用 ok 数)。"""
+    folder = Path(index.folder)
+    folder_norm = os.path.normcase(str(folder))
+    total = sum(1 for e in index.images if e.status != "missing")
+    used_here = sum(
+        1 for p in used.paths
+        if os.path.normcase(str(Path(p).parent)) == folder_norm
+    )
+    used_norm = {os.path.normcase(p) for p in used.paths}
+    remaining = sum(
+        1 for e in index.ok_entries()
+        if os.path.normcase(str(folder / e.name)) not in used_norm
+    )
+    return total, used_here, remaining
+
+
+def plan_items(
+    records: Sequence[NamingRecord],
+    matches: dict[str, CoverMatch],
+    folder: str,
+) -> list[tuple[Path, str, Path | None]]:
+    """按 records 顺序产出 (path, title, cover) 三元组；无匹配封面则 None。"""
+    base = Path(folder)
+    items: list[tuple[Path, str, Path | None]] = []
+    for record in records:
+        match = matches.get(str(record.path))
+        cover = base / match.cover_name if (match and match.cover_name) else None
+        items.append((record.path, record.title, cover))
+    return items
+
+
+def used_paths_from_results(
+    results: Sequence[RenameResult], plans: Sequence
+) -> tuple[str, ...]:
+    """收集 covered 结果对应的 plan.cover 绝对路径，保持顺序并去重。"""
+    paths: list[str] = []
+    seen: set[str] = set()
+    for result, plan in zip(results, plans):
+        if not result.covered or plan.cover is None:
+            continue
+        raw = str(plan.cover)
+        key = os.path.normcase(raw)
+        if key not in seen:
+            seen.add(key)
+            paths.append(raw)
+    return tuple(paths)
+
+
+def build_cover_info(
+    ok_records: Sequence[NamingRecord],
+    matches: dict[str, CoverMatch],
+    results: Sequence[RenameResult],
+    plans: Sequence,
+) -> dict:
+    """汇总封面结果与 {源文件路径: 封面文件名} 映射，供主线程回填/弹窗。"""
+    names: dict[str, str] = {}
+    covered = cover_failed = 0
+    for result, plan in zip(results, plans):
+        key = str(result.src)
+        names[key] = plan.cover.name if plan.cover is not None else ""
+        if result.covered:
+            covered += 1
+        elif result.cover_error:
+            cover_failed += 1
+
+    exhausted = 0
+    for record in ok_records:
+        match = matches.get(str(record.path))
+        if match is not None and match.cover_name is None and match.error:
+            exhausted += 1
+
+    return {
+        "covered": covered,
+        "cover_failed": cover_failed,
+        "exhausted": exhausted,
+        "total": len(ok_records),
+        "names": names,
+    }
+
+
 class RenameWorker(QThread):
-    """后台执行：起名 → 规划 → 写标签 + 重命名。"""
-    progress = pyqtSignal(int, int, object)       # current, total, NamingRecord
-    renamed = pyqtSignal(object, object, object)  # results, log_path, registry
+    """后台执行：索引封面 → 起名 → 匹配封面 → 规划 → 写标签 + 重命名。"""
+    progress = pyqtSignal(int, int, object)            # current, total, NamingRecord
+    cover_progress = pyqtSignal(str, int, int, str)    # phase, done, total, name
+    renamed = pyqtSignal(object, object, object, object)  # results, log_path, registry, cover_info
     failed = pyqtSignal(str)
 
     def __init__(
@@ -67,11 +163,17 @@ class RenameWorker(QThread):
         settings: Settings,
         files: list[Path],
         registry: TitleRegistry,
+        cover_index: CoverIndex,
+        used_covers: UsedCovers,
+        do_cover: bool,
     ) -> None:
         super().__init__()
         self.settings = settings
         self.files = files
         self.registry = registry
+        self.cover_index = cover_index
+        self.used_covers = used_covers
+        self.do_cover = do_cover
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -79,6 +181,17 @@ class RenameWorker(QThread):
 
     def run(self) -> None:
         try:
+            index = self.cover_index
+            if self.do_cover:
+                index = run_incremental(
+                    index,
+                    self.settings,
+                    progress=lambda ph, d, t, n: self.cover_progress.emit(ph, d, t, n),
+                    should_cancel=lambda: self._cancelled,
+                )
+                if self._cancelled:
+                    return
+
             records = run_batch(
                 self.settings,
                 self.files,
@@ -92,15 +205,48 @@ class RenameWorker(QThread):
             if not ok_records:
                 self.failed.emit("没有任何曲目成功起名，未执行重命名")
                 return
-            plans = plan_renames([(r.path, r.title) for r in ok_records])
+
+            matches: dict[str, CoverMatch] = {}
+            if self.do_cover:
+                queries = [
+                    CoverQuery(str(r.path), r.title, r.reason) for r in ok_records
+                ]
+                names = tuple(e.name for e in index.ok_entries())
+                loaded = load_embeddings(names)
+                if loaded is None:
+                    self.failed.emit("封面向量读取失败，请重新执行以修复索引")
+                    return
+                matrix, _names = loaded
+                matches = {
+                    m.key: m
+                    for m in match_all(
+                        index, matrix, names, self.used_covers, queries, self.settings
+                    )
+                }
+                items = plan_items(ok_records, matches, self.settings.cover_dir)
+            else:
+                items = [(r.path, r.title, None) for r in ok_records]
+
+            plans = plan_renames(items)
             log_path = default_log_path()
             results = execute_renames(
                 plans, log_path=log_path, write_metadata=self.settings.write_metadata
             )
+
+            if self.do_cover:
+                self.used_covers = register_used(
+                    self.used_covers, used_paths_from_results(results, plans)
+                )
+                cover_info: object = build_cover_info(
+                    ok_records, matches, results, plans
+                )
+            else:
+                cover_info = None
+
             new_registry = register_titles(
                 self.registry, tuple(r.title for r in ok_records)
             )
-            self.renamed.emit(results, log_path, new_registry)
+            self.renamed.emit(results, log_path, new_registry, cover_info)
         except Exception as e:  # noqa: BLE001 - 后台线程需兜底并回报
             self.failed.emit(str(e))
 
@@ -114,9 +260,12 @@ class RenameWindow(QDialog):
         self.resize(1120, 660)
         self._settings = load_settings()
         self._registry = load_registry()
+        self._cover_index = load_index(self._settings.cover_dir)
+        self._used_covers = load_used()
         self._worker: RenameWorker | None = None
         self._last_log: Path | None = None
         self._files_override: list[Path] | None = None
+        self._row_by_path: dict[str, int] = {}
         self.setAcceptDrops(True)
         self._build_ui()
 
@@ -157,9 +306,9 @@ class RenameWindow(QDialog):
         warn.setWordWrap(True)
         layout.addWidget(warn)
 
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
-            ["状态", "原文件名", "新歌名", "语种", "命名依据", "歌词来源"]
+            ["状态", "原文件名", "新歌名", "语种", "命名依据", "歌词来源", "封面"]
         )
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(_COL_STATUS, QHeaderView.ResizeMode.ResizeToContents)
@@ -168,6 +317,7 @@ class RenameWindow(QDialog):
         header.setSectionResizeMode(_COL_LANG, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(_COL_REASON, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(_COL_SRC, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(_COL_COVER, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
         layout.addWidget(self.table, 1)
 
@@ -210,6 +360,7 @@ class RenameWindow(QDialog):
     def _fill_preview(self, files: list[Path]) -> None:
         """把待处理文件列进表格，便于执行前核对。"""
         self.table.setRowCount(0)
+        self._row_by_path = {}
         for path in files:
             row = self.table.rowCount()
             self.table.insertRow(row)
@@ -217,6 +368,8 @@ class RenameWindow(QDialog):
             status.setForeground(QColor("gray"))
             self.table.setItem(row, _COL_STATUS, status)
             self.table.setItem(row, _COL_OLD, QTableWidgetItem(path.name))
+            self.table.setItem(row, _COL_COVER, QTableWidgetItem(""))
+            self._row_by_path[str(path)] = row
 
     def _collect_files(self) -> list[Path]:
         if self._files_override is not None:
@@ -270,6 +423,8 @@ class RenameWindow(QDialog):
         dialog = SettingsDialog(self._settings, self)
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.result_settings:
             self._settings = dialog.result_settings
+            self._cover_index = load_index(self._settings.cover_dir)
+            self._used_covers = load_used()
             self.lbl_status.setText("API 设置已保存")
 
     def _on_start(self) -> None:
@@ -283,6 +438,30 @@ class RenameWindow(QDialog):
             if not self._settings.is_configured:
                 return
 
+        do_cover = resolve_do_cover(
+            self._settings.cover_enabled, self._settings.write_metadata
+        )
+        diff: ScanDiff | None = None
+        if do_cover:
+            cover_dir = Path(self._settings.cover_dir)
+            if not cover_dir.is_dir():
+                QMessageBox.warning(
+                    self, "提示", f"封面目录不存在：{cover_dir}"
+                )
+                return
+            diff = ScanDiff.scan_folder(self._cover_index)
+            total_c, used_c, remain_c = cover_summary(
+                self._cover_index, self._used_covers
+            )
+            cover_state = (
+                f"封面：启用（素材 {total_c} / 已用 {used_c} / 剩余 {remain_c}；"
+                f"待索引 {len(diff.to_index)} 张）"
+            )
+        elif self._settings.cover_enabled:
+            cover_state = "封面：已启用但 ID3 标题写入关闭，本次不写封面"
+        else:
+            cover_state = "封面：禁用"
+
         asr_state = "启用" if (self._settings.asr_enabled and self._settings.asr_configured) \
             else "未启用（无法判定语种）"
         meta_state = "写入 ID3 标题" if self._settings.write_metadata else "不写标签"
@@ -293,19 +472,41 @@ class RenameWindow(QDialog):
             f"目录：{files[0].parent}\n"
             f"语音识别：{asr_state}\n"
             f"元数据：{meta_state}\n"
+            f"{cover_state}\n"
             f"歌名库：已有 {len(self._registry.titles)} 个，本次将全局去重\n\n"
             "确认执行？",
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
+        if do_cover and diff is not None and len(diff.to_index) > 0:
+            index_reply = QMessageBox.warning(
+                self,
+                "封面索引提示",
+                f"发现 {len(diff.to_index)} 张封面未索引，将先调用视觉模型建立索引"
+                "（预计约数分钟至数十分钟、产生少量 API 费用），确认继续？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if index_reply != QMessageBox.StandardButton.Yes:
+                return
+
         self.table.setRowCount(0)
-        self.progress.setMaximum(len(files))
+        self._row_by_path = {}
+        self.progress.setRange(0, len(files))
         self.progress.setValue(0)
         self._set_running(True)
 
-        self._worker = RenameWorker(self._settings, files, self._registry)
+        self._worker = RenameWorker(
+            self._settings,
+            files,
+            self._registry,
+            cover_index=self._cover_index,
+            used_covers=self._used_covers,
+            do_cover=do_cover,
+        )
         self._worker.progress.connect(self._on_progress)
+        self._worker.cover_progress.connect(self._on_cover_progress)
         self._worker.renamed.connect(self._on_renamed)
         self._worker.failed.connect(self._on_failed)
         self._worker.start()
@@ -319,13 +520,27 @@ class RenameWindow(QDialog):
 
     def _on_progress(self, current: int, total: int, record: object) -> None:
         assert isinstance(record, NamingRecord)
+        self.progress.setRange(0, total)
         self.progress.setValue(current)
         self._append_row(record)
         self.lbl_status.setText(f"起名中... {current}/{total}")
 
+    def _on_cover_progress(
+        self, phase: str, done: int, total: int, _name: str
+    ) -> None:
+        if phase == "describe":
+            self.lbl_status.setText(f"索引封面意境... {done}/{total}")
+            self.progress.setRange(0, total)
+            self.progress.setValue(done)
+        elif phase == "embed":
+            self.lbl_status.setText("生成封面向量...")
+        elif phase == "scan":
+            self.lbl_status.setText("扫描封面目录...")
+
     def _append_row(self, record: NamingRecord) -> None:
         row = self.table.rowCount()
         self.table.insertRow(row)
+        self._row_by_path[str(record.path)] = row
         lang = _LANG_LABEL.get(record.detected_language, record.detected_language)
         src_label = _SRC_LABEL.get(record.lyrics_source, record.lyrics_source)
         if record.asr_note:
@@ -338,6 +553,8 @@ class RenameWindow(QDialog):
             status, color = "失败", QColor("red")
             new_name, reason = "-", record.error or ""
 
+        pending_cover = QTableWidgetItem("匹配中..." if record.ok else "")
+        pending_cover.setForeground(QColor("gray"))
         for col, text in (
             (_COL_STATUS, status),
             (_COL_OLD, record.path.name),
@@ -350,9 +567,16 @@ class RenameWindow(QDialog):
             if col == _COL_STATUS:
                 item.setForeground(color)
             self.table.setItem(row, col, item)
+        self.table.setItem(row, _COL_COVER, pending_cover)
         self.table.scrollToBottom()
 
-    def _on_renamed(self, results: object, log_path: object, registry: object) -> None:
+    def _on_renamed(
+        self,
+        results: object,
+        log_path: object,
+        registry: object,
+        cover_info: object,
+    ) -> None:
         self._set_running(False)
         result_list = list(results)  # type: ignore[arg-type]
         self._last_log = Path(str(log_path))
@@ -363,17 +587,55 @@ class RenameWindow(QDialog):
         self.lbl_registry.setText(self._registry_hint())
         self.btn_rollback.setEnabled(True)
 
+        info = cover_info if isinstance(cover_info, dict) else None
+        names = info.get("names", {}) if info else {}
+        for result in result_list:
+            row = self._row_by_path.get(str(result.src))
+            if row is None:
+                continue
+            if result.covered:
+                item = QTableWidgetItem(names.get(str(result.src), ""))
+            elif result.cover_error:
+                item = QTableWidgetItem("失败")
+                item.setForeground(QColor("red"))
+            elif names.get(str(result.src)):
+                item = QTableWidgetItem(names.get(str(result.src), ""))
+            else:
+                item = QTableWidgetItem("素材用尽")
+                item.setForeground(QColor("gray"))
+            self.table.setItem(row, _COL_COVER, item)
+
         ok = sum(1 for r in result_list if r.success)
         fail = len(result_list) - ok
         tagged = sum(1 for r in result_list if r.tagged)
         tag_fail = sum(1 for r in result_list if r.tag_error)
-        self.lbl_status.setText(f"完成：重命名 {ok} 成功 / {fail} 失败；标签 {tagged} 写入 / {tag_fail} 失败")
+        if info:
+            covered = info["covered"]
+            cover_failed = info["cover_failed"]
+            exhausted = info["exhausted"]
+            cover_line = (
+                f"封面：写入 {covered} 个，失败 {cover_failed} 个，"
+                f"跳过（素材用尽）{exhausted} 个\n"
+            )
+            extra = (
+                "\n封面素材已用尽，请向封面目录补充图片\n" if exhausted > 0 else ""
+            )
+            status_tail = f"；封面 {covered} 写入 / {cover_failed} 失败 / {exhausted} 用尽"
+        else:
+            cover_line, extra = "", ""
+            status_tail = ""
+        self.lbl_status.setText(
+            f"完成：重命名 {ok} 成功 / {fail} 失败；标签 {tagged} 写入 / "
+            f"{tag_fail} 失败{status_tail}"
+        )
         QMessageBox.information(
             self,
             "完成",
             f"重命名：成功 {ok} 个，失败 {fail} 个\n"
-            f"ID3 标题：写入 {tagged} 个，失败 {tag_fail} 个\n\n"
-            f"歌名库已更新至 {len(self._registry.titles)} 个\n\n"
+            f"ID3 标题：写入 {tagged} 个，失败 {tag_fail} 个\n"
+            f"{cover_line}\n"
+            f"歌名库已更新至 {len(self._registry.titles)} 个\n"
+            f"{extra}\n"
             f"回滚日志：\n{self._last_log}",
         )
 
