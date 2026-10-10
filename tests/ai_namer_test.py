@@ -388,13 +388,17 @@ def test_run_batch_order_and_progress(tmp_path, monkeypatch):
 
 # ---- 命名风格与避让规模（A+C：风格锚定 + 压缩歌名库提示）----
 
-def test_system_prompt_has_style_anchor_and_banned_words():
-    # 风格锚定 + 语域引导 + 俗套词黑名单，防止退回流行榜单式命名
-    assert "A&R" in an._SYSTEM_ZH
-    assert "语域" in an._SYSTEM_ZH
-    assert "严禁" in an._SYSTEM_ZH
-    for word in ("夜", "梦", "光", "影", "night", "dream", "light"):
-        assert word in an._SYSTEM_ZH
+def test_system_prompt_has_style_anchor_and_material_ban():
+    # 正面风格锚定（用户验收的正例）
+    assert "风轻恕" in an._SYSTEM_ZH
+    assert "余香过巷" in an._SYSTEM_ZH
+    # 反面锚定：材质/器物词当主语 + 生造文言（v0.9.0 回归的根因）
+    assert "反例" in an._SYSTEM_ZH
+    assert "玄武岩" in an._SYSTEM_ZH
+    assert "软木" in an._SYSTEM_ZH
+    assert "严禁把具体材质" in an._SYSTEM_ZH
+    # 放宽俗套词黑名单：元素性单字允许使用（曾被误封）
+    assert "元素性单字是好的" in an._SYSTEM_ZH
 
 
 def test_registry_recent_default_capped():
