@@ -129,6 +129,54 @@ def test_parse_response_non_json_body():
         an._parse_response(_FakeResp(None, text="oops"))
 
 
+# ---- 双语命名：英文歌名 + 中文译名 ----
+
+def test_parse_response_english_missing_translation_raises():
+    with pytest.raises(AiContentError) as exc:
+        an._parse_response(_chat_resp('{"title":"Song of Bamboo","reason":"r"}'))
+    assert "中文译名" in str(exc.value)
+
+
+def test_parse_response_english_with_translation_ok():
+    result = an._parse_response(
+        _chat_resp('{"title":"Song of Bamboo","title_zh":"竹之曲","reason":"r"}')
+    )
+    assert result == NamingResult(
+        title="Song of Bamboo", reason="r", title_zh="竹之曲"
+    )
+
+
+def test_parse_response_chinese_title_needs_no_translation():
+    result = an._parse_response(_chat_resp('{"title":"竹之曲","reason":"r"}'))
+    assert result.title == "竹之曲"
+    assert result.title_zh == ""
+
+
+def test_parse_response_translation_with_braces_raises():
+    with pytest.raises(AiContentError):
+        an._parse_response(
+            _chat_resp('{"title":"Song","title_zh":"{x}","reason":"r"}')
+        )
+
+
+def test_has_chinese():
+    assert an.has_chinese("竹之曲")
+    assert not an.has_chinese("Song of Bamboo")
+    assert not an.has_chinese("Bamboo 2024")
+
+
+def test_compose_title_english_with_translation():
+    assert an.compose_title("Song of Bamboo", "竹之曲") == "Song of Bamboo 竹之曲"
+
+
+def test_compose_title_chinese_title_unchanged():
+    assert an.compose_title("竹之曲", "Bamboo Song") == "竹之曲"
+
+
+def test_compose_title_blank_translation_unchanged():
+    assert an.compose_title("Song of Bamboo", "  ") == "Song of Bamboo"
+
+
 # ---- suggest_title（requests 打桩）----
 
 def test_suggest_title_requires_config():
@@ -141,7 +189,9 @@ def test_suggest_title_success_and_payload(monkeypatch):
 
     def fake_post(url, headers, json, timeout):
         captured.update(url=url, headers=headers, json=json, timeout=timeout)
-        return _chat_resp('{"title":"Night Drive","reason":"synth vibe"}')
+        return _chat_resp(
+            '{"title":"Night Drive","title_zh":"夜驰","reason":"synth vibe"}'
+        )
 
     monkeypatch.setattr(an.requests, "post", fake_post)
     data = NamingInput(
@@ -152,6 +202,7 @@ def test_suggest_title_success_and_payload(monkeypatch):
     result = an.suggest_title(_settings(language="en"), data, avoid=("旧名",))
 
     assert result.title == "Night Drive"
+    assert result.title_zh == "夜驰"
     assert captured["json"]["response_format"] == {"type": "json_object"}
     assert captured["json"]["temperature"] == 1.0
     assert captured["json"]["messages"][0]["role"] == "system"
@@ -162,7 +213,9 @@ def test_suggest_title_passes_temperature(monkeypatch):
 
     def fake_post(url, headers, json, timeout):
         captured["json"] = json
-        return _chat_resp('{"title":"Night Drive","reason":"synth vibe"}')
+        return _chat_resp(
+            '{"title":"Night Drive","title_zh":"夜驰","reason":"synth vibe"}'
+        )
 
     monkeypatch.setattr(an.requests, "post", fake_post)
     an.suggest_title(
@@ -270,6 +323,22 @@ def test_naming_one_collision_falls_back_to_uniquify(tmp_path, monkeypatch):
     assert record.ok
     assert record.attempts == 3
     assert record.title != "夜曲"
+
+
+def test_naming_one_appends_chinese_translation(tmp_path, monkeypatch):
+    _patch_prereqs(monkeypatch)
+    monkeypatch.setattr(
+        rp, "suggest_title",
+        lambda settings, data, avoid=(), temperature=1.0:
+            NamingResult(title="Song of Bamboo", reason="r", title_zh="竹之曲"),
+    )
+    record = rp.naming_one(
+        _settings(), tmp_path / "a.mp3",
+        rp._UsedTitles(frozenset()), TitleRegistry(),
+    )
+
+    assert record.ok
+    assert record.title == "Song of Bamboo 竹之曲"
 
 
 def test_naming_one_asr_path_ok(tmp_path, monkeypatch):

@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .ai_namer import AiContentError, AiNamerError, NamingInput, suggest_title
+from .ai_namer import (
+    AiContentError,
+    AiNamerError,
+    NamingInput,
+    compose_title,
+    suggest_title,
+)
 from .asr_client import LANG_UNKNOWN, transcribe
 from .audio_features import AudioFeatureError, analyze
 from .lyrics_reader import read_lyrics
@@ -177,10 +183,12 @@ def naming_one(
                 features_desc=features_desc, error=str(e), attempts=attempt,
                 asr_note=asr_note, local_vocal=local_vocal,
             )
-        last_title, last_reason = result.title, result.reason
-        if used.try_claim(result.title):
+        # 英文歌名拼接中文译名（如 Song of Bamboo 竹之曲），文件名/元数据/歌名库统一用合成名
+        final = compose_title(result.title, result.title_zh)
+        last_title, last_reason = final, result.reason
+        if used.try_claim(final):
             return NamingRecord(
-                path=path, title=result.title, reason=result.reason,
+                path=path, title=final, reason=result.reason,
                 lyrics_source=lyrics_source, detected_language=language,
                 features_desc=features_desc, attempts=attempt,
                 asr_note=asr_note, local_vocal=local_vocal,

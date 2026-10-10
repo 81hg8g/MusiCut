@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from src.core.ai_namer import AiNamerError, NamingInput, suggest_title
+from src.core.ai_namer import AiNamerError, NamingInput, compose_title, suggest_title
 from src.core.settings import (
     DEFAULT_ASR_BASE_URL,
     DEFAULT_ASR_MODEL,
@@ -231,7 +231,11 @@ class SettingsDialog(QDialog):
                 NamingInput(file_name="测试音频.mp3", duration_sec=180.0,
                             features_desc="时长 3分0秒；节奏约 90 BPM（中速）"),
             )
-            QMessageBox.information(self, "连接成功", f"模型返回示例歌名：{result.title}")
+            QMessageBox.information(
+                self, "连接成功",
+                "模型返回示例歌名："
+                + compose_title(result.title, result.title_zh),
+            )
         except AiNamerError as e:
             QMessageBox.critical(self, "连接失败", str(e))
         finally:

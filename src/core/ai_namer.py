@@ -11,6 +11,7 @@ import requests
 from .settings import Settings
 
 _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
+_CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
 _MAX_LYRICS_CHARS = 1200
 
 _SYSTEM_ZH = (
@@ -37,14 +38,22 @@ _SYSTEM_ZH = (
     "heart、love、soul、time、forever、alone"
     "——除非能组成出人意料的新意；\n"
     "8) 不得与用户列出的已用歌名重复或高度近似；\n"
-    "9) 只输出 JSON 对象，格式为 {\"title\": \"...\", \"reason\": \"...\"}，"
+    "9) 若最终歌名为英文（不含任何汉字），必须额外给出对应中文译名并填入 title_zh："
+    "译名要“信达雅”——忠实原意（信）、顺畅自然（达）、凝练有韵味（雅），"
+    "如 Song of Bamboo → 竹之曲，不得逐字硬译；"
+    "若歌名为中文，title_zh 填空字符串；\n"
+    "10) 只输出 JSON 对象，格式为 "
+    "{\"title\": \"...\", \"title_zh\": \"...\", \"reason\": \"...\"}，"
     "reason 用一句话说明命名依据。"
 )
 
-_LANG_RULE_ZH = "这首歌包含中文演唱。歌名以中文为主，也可以使用英文。"
-_LANG_RULE_EN = "这首歌为纯英文演唱。歌名必须全部使用英文，不得出现任何中文汉字。"
-_LANG_RULE_ZH_ONLY = "未检测到演唱信息。请使用中文命名。"
-_LANG_RULE_EN_ONLY = "未检测到演唱信息。请使用英文命名。"
+_LANG_RULE_ZH = "这首歌包含中文演唱。title 以中文为主，也可以使用英文；title_zh 留空。"
+_LANG_RULE_EN = (
+    "这首歌为纯英文演唱。title 必须全部使用英文，不得出现任何中文汉字；"
+    "中文译名只能写在 title_zh。"
+)
+_LANG_RULE_ZH_ONLY = "未检测到演唱信息。请使用中文命名，title_zh 留空。"
+_LANG_RULE_EN_ONLY = "未检测到演唱信息。请使用英文命名，并在 title_zh 给出中文译名。"
 
 
 class AiNamerError(RuntimeError):
@@ -59,6 +68,7 @@ class AiContentError(AiNamerError):
 class NamingResult:
     title: str
     reason: str
+    title_zh: str = ""   # 英文歌名的中文译名；中文歌名时为空
 
 
 @dataclass(frozen=True)
@@ -177,7 +187,17 @@ def _parse_response(resp: requests.Response) -> NamingResult:
         raise AiContentError(f"模型未返回歌名: {content[:200]}")
     title = _sanitize_title(title)
     _validate_title(title)
-    return NamingResult(title=title, reason=str(data.get("reason", "")).strip())
+
+    title_zh = _sanitize_title(str(data.get("title_zh", "")).strip())
+    if title_zh:
+        _validate_title(title_zh)
+    # 英文歌名必须带中文译名，缺失视为瞬时内容畸形以便重试
+    if not has_chinese(title) and not title_zh:
+        raise AiContentError(f"模型未返回歌名的中文译名: {content[:200]}")
+
+    return NamingResult(
+        title=title, reason=str(data.get("reason", "")).strip(), title_zh=title_zh
+    )
 
 
 def _extract_json(text: str) -> dict:
@@ -222,3 +242,20 @@ def _fmt_dur(sec: float) -> str:
     m = int(sec // 60)
     s = int(sec % 60)
     return f"{m}分{s}秒"
+
+
+def has_chinese(text: str) -> bool:
+    """是否含汉字（用于判定歌名语言）。"""
+    return bool(_CJK_RE.search(text))
+
+
+def compose_title(title: str, title_zh: str) -> str:
+    """英文歌名拼接中文译名。
+
+    ('Song of Bamboo', '竹之曲') → 'Song of Bamboo 竹之曲'
+    中文歌名或译名为空时原样返回。
+    """
+    zh = title_zh.strip()
+    if not zh or has_chinese(title):
+        return title
+    return f"{title} {zh}"
